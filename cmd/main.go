@@ -4,16 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gabrielpgava/stress-test-fullcycle/internal/storage"
 )
-
-type Request struct {
-	URL        string
-	StatusCode int
-}
 
 func main() {
 
@@ -21,24 +18,25 @@ func main() {
 	requests := flag.Int("requests", 1, "Número de requisições HTTP a serem feitas.")
 	concurrency := flag.Int("concurrency", 1, "Número de requisições concorrentes.")
 
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Uso: %s --url=http://exemplo.com --requests=100 --concurrency=10\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+
 	flag.Parse()
 
+	if err := validateFlags(*url, *requests, *concurrency); err != nil {
+		fmt.Fprintln(os.Stderr, "Erro:", err)
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	storage.Reset()
+
 	startTime := time.Now()
+	client := &http.Client{Timeout: 10 * time.Second}
 
-	done := make(chan bool)
-	semaphore := make(chan struct{}, *concurrency)
-
-	for i := 0; i < *requests; i++ {
-		go func() {
-			semaphore <- struct{}{}
-			makeRequest(*url, done)
-			<-semaphore
-		}()
-	}
-
-	for i := 0; i < *requests; i++ {
-		<-done
-	}
+	runLoad(*url, *requests, *concurrency, client)
 	elapsedTime := time.Since(startTime)
 
 	//Relatorio
@@ -51,6 +49,9 @@ func main() {
 	fmt.Println(strings.Repeat("-", 50))
 	fmt.Printf("Tempo total de execução:          %s\n", elapsedTime)
 	fmt.Println(strings.Repeat("-", 50))
+	fmt.Printf("Total de respostas 200:           %d\n", storage.GetStatusCounts()[200])
+	fmt.Printf("Total de erros de conexão:        %d\n", storage.GetErrorCount())
+	fmt.Println(strings.Repeat("-", 50))
 	fmt.Println("Distribuição de códigos de status:")
 	totalProcessed := storage.PrintReport()
 	fmt.Println(strings.Repeat("=", 50))
@@ -59,15 +60,46 @@ func main() {
 
 }
 
-func makeRequest(url string, done chan bool) {
-	defer func() { done <- true }()
+func validateFlags(url string, requests int, concurrency int) error {
+	if strings.TrimSpace(url) == "" {
+		return fmt.Errorf("a flag --url é obrigatória")
+	}
+	if requests <= 0 {
+		return fmt.Errorf("a flag --requests deve ser maior que zero")
+	}
+	if concurrency <= 0 {
+		return fmt.Errorf("a flag --concurrency deve ser maior que zero")
+	}
+	if concurrency > requests {
+		return fmt.Errorf("a flag --concurrency não pode ser maior que --requests")
+	}
+	return nil
+}
 
-	resp, err := http.Get(url)
+func runLoad(url string, requests int, concurrency int, client *http.Client) {
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, concurrency)
+
+	wg.Add(requests)
+	for i := 0; i < requests; i++ {
+		go func() {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			makeRequest(client, url)
+			<-semaphore
+		}()
+	}
+	wg.Wait()
+}
+
+func makeRequest(client *http.Client, url string) {
+
+	resp, err := client.Get(url)
 	if err != nil {
-		storage.IncrementCode("Error", 0)
+		storage.IncrementError()
 		return
 	}
 	defer resp.Body.Close()
 
-	storage.IncrementCode(fmt.Sprintf("%d", resp.StatusCode), resp.StatusCode)
+	storage.IncrementStatus(resp.StatusCode)
 }

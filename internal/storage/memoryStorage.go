@@ -2,59 +2,68 @@ package storage
 
 import (
 	"fmt"
+	"sort"
 	"sync"
-
-	models "github.com/gabrielpgava/stress-test-fullcycle/internal/model"
 )
 
 var (
-	StatusCode = make(map[string]*models.StatusCode)
-	mu         sync.Mutex
+	StatusCounts = make(map[int]int)
+	ErrorCount   int
+	mu           sync.Mutex
 )
 
-func GetCode(statuscode string) (*models.StatusCode, bool) {
+func Reset() {
 	mu.Lock()
 	defer mu.Unlock()
-	state, exists := StatusCode[statuscode]
-	return state, exists
+	StatusCounts = make(map[int]int)
+	ErrorCount = 0
 }
 
-func SetCode(statuscode string, state *models.StatusCode) {
+func IncrementStatus(code int) {
 	mu.Lock()
 	defer mu.Unlock()
-	StatusCode[statuscode] = state
+	StatusCounts[code]++
 }
 
-func IncrementCode(statuscode string, code int) {
+func IncrementError() {
 	mu.Lock()
 	defer mu.Unlock()
-	if existing, exists := StatusCode[statuscode]; exists {
-		existing.Count++
-	} else {
-		StatusCode[statuscode] = &models.StatusCode{
-			Code:  code,
-			Count: 1,
-		}
+	ErrorCount++
+}
+
+func GetStatusCounts() map[int]int {
+	mu.Lock()
+	defer mu.Unlock()
+	copied := make(map[int]int, len(StatusCounts))
+	for code, count := range StatusCounts {
+		copied[code] = count
 	}
+	return copied
 }
 
-func DeleteCode(statuscode string) {
+func GetErrorCount() int {
 	mu.Lock()
 	defer mu.Unlock()
-	delete(StatusCode, statuscode)
+	return ErrorCount
 }
 
 func PrintReport() int {
 	mu.Lock()
 	defer mu.Unlock()
 	total := 0
-	for code, status := range StatusCode {
-		if code == "Error" {
-			fmt.Printf("Erros de conexão: %d\n", status.Count)
-		} else {
-			fmt.Printf("Código: %s, Contagem: %d\n", code, status.Count)
-		}
-		total += status.Count
+	codes := make([]int, 0, len(StatusCounts))
+	for code := range StatusCounts {
+		codes = append(codes, code)
+	}
+	sort.Ints(codes)
+	for _, code := range codes {
+		count := StatusCounts[code]
+		fmt.Printf("Código: %d, Contagem: %d\n", code, count)
+		total += count
+	}
+	if ErrorCount > 0 {
+		fmt.Printf("Erros de conexão: %d\n", ErrorCount)
+		total += ErrorCount
 	}
 	return total
 }
